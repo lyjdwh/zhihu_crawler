@@ -12,6 +12,12 @@
     # 按主题过滤（金融/投资/股市相关）
     python scripts/crawl_user.py --user xu-ze-qiu --count 100 --topic finance
 
+    # 按日期筛选（爬取指定日期之后的回答）
+    python scripts/crawl_user.py --user xu-ze-qiu --after-date 2026-03-01
+
+    # 组合使用：日期 + 主题 + 数量
+    python scripts/crawl_user.py --user xu-ze-qiu --count 50 --topic finance --after-date 2026-01-01
+
     # 组合使用
     python scripts/crawl_user.py --user xu-ze-qiu --count 100 --topic finance --output data.json
 """
@@ -193,6 +199,8 @@ class ZhihuCrawler:
         user_token: str,
         count: int = 100,
         topic: str = "all",
+        after_date: str = None,
+        before_date: str = None,
         with_content: bool = True
     ) -> List[Dict]:
         """
@@ -202,8 +210,18 @@ class ZhihuCrawler:
             user_token: 用户url_token
             count: 目标数量
             topic: 主题过滤 (all/finance/tech/international/culture/life 或自定义关键词)
+            after_date: 爬取指定日期之后的回答 (格式: YYYY-MM-DD)
+            before_date: 爬取指定日期之前的回答 (格式: YYYY-MM-DD)
             with_content: 是否获取完整内容
         """
+        # 解析日期
+        after_dt = None
+        before_dt = None
+        if after_date:
+            after_dt = datetime.strptime(after_date, "%Y-%m-%d")
+        if before_date:
+            before_dt = datetime.strptime(before_date, "%Y-%m-%d")
+
         # 访问用户回答页面
         answers_url = f"https://www.zhihu.com/people/{user_token}/answers"
         await self.page.goto(answers_url, wait_until="domcontentloaded")
@@ -212,6 +230,10 @@ class ZhihuCrawler:
         print(f"\n开始爬取用户 {user_token} 的回答...")
         print(f"  目标数量: {count}")
         print(f"  主题过滤: {topic}")
+        if after_date:
+            print(f"  日期筛选: {after_date} 之后")
+        if before_date:
+            print(f"  日期筛选: {before_date} 之前")
         print("-" * 50)
 
         all_answers = []
@@ -219,7 +241,7 @@ class ZhihuCrawler:
         max_scrolls = 30
 
         while len(all_answers) < count and scroll_count < max_scrolls:
-            # 获取当前页面回答
+            # 获取当前页面回答（包含日期信息）
             answers = await self.page.evaluate("""(existingIds) => {
                 const results = [];
                 const items = document.querySelectorAll('.List-item, .ContentItem');
@@ -240,12 +262,20 @@ class ZhihuCrawler:
                         const questionId = qMatch[1];
                         const answerId = aMatch[1];
 
+                        // 尝试获取日期
+                        let createdTime = '';
+                        const timeEl = item.querySelector('[class*="time"], [class*="date"], .ContentItem-time');
+                        if (timeEl) {
+                            createdTime = timeEl.innerText.trim();
+                        }
+
                         if (!existingIds.includes(answerId)) {
                             results.push({
                                 question_title: title,
                                 question_url: href,
                                 question_id: questionId,
                                 answer_id: answerId,
+                                created_time: createdTime,
                                 content: '',
                                 vote_count: 0
                             });
@@ -256,7 +286,7 @@ class ZhihuCrawler:
                 return results;
             }""", [a['answer_id'] for a in all_answers])
 
-            # 过滤主题并去重
+            # 过滤主题、日期并去重
             existing_ids = set(a['answer_id'] for a in all_answers)
             for ans in answers:
                 if ans['answer_id'] in existing_ids:
@@ -266,6 +296,34 @@ class ZhihuCrawler:
                 text = ans['question_title']
                 if not self.check_topic(text, topic):
                     continue
+
+                # 检查日期
+                if after_dt or before_dt:
+                    # 解析回答日期
+                    created = ans.get('created_time', '')
+                    if created:
+                        # 尝试解析日期
+                        try:
+                            # 尝试多种格式
+                            answer_dt = None
+                            for fmt in ["%Y-%m-%d", "%Y年%m月%d日", "%m-%d", "%Y-%m-%d %H:%M"]:
+                                try:
+                                    answer_dt = datetime.strptime(created, fmt)
+                                    break
+                                except:
+                                    pass
+
+                            # 如果只有月日，假设是今年
+                            if answer_dt and answer_dt.year == 1900:
+                                answer_dt = answer_dt.replace(year=datetime.now().year)
+
+                            if answer_dt:
+                                if after_dt and answer_dt < after_dt:
+                                    continue
+                                if before_dt and answer_dt > before_dt:
+                                    continue
+                        except:
+                            pass
 
                 all_answers.append(ans)
                 existing_ids.add(ans['answer_id'])
@@ -404,6 +462,8 @@ async def main():
     parser.add_argument("--user", type=str, required=True, help="用户url_token")
     parser.add_argument("--count", type=int, default=100, help="爬取数量 (默认100)")
     parser.add_argument("--topic", type=str, default="all", help="主题过滤 (默认all)")
+    parser.add_argument("--after-date", type=str, default=None, help="爬取指定日期之后的回答 (格式: YYYY-MM-DD)")
+    parser.add_argument("--before-date", type=str, default=None, help="爬取指定日期之前的回答 (格式: YYYY-MM-DD)")
     parser.add_argument("--output", type=str, default="output/{user}_answers.json", help="输出文件")
     parser.add_argument("--headless", action="store_true", help="无头模式")
     parser.add_argument("--no-content", action="store_true", help="不获取完整内容（只获取列表）")
@@ -431,6 +491,8 @@ async def main():
             user_token=args.user,
             count=args.count,
             topic=args.topic,
+            after_date=args.after_date,
+            before_date=args.before_date,
             with_content=not args.no_content
         )
 
