@@ -1,17 +1,9 @@
 #!/usr/bin/env python3
 """
-知乎收藏夹爬虫 - 爬取收藏夹中的回答和文章
+知乎收藏夹爬虫 - 支持分页爬取
 
 用法:
-    # 爬取收藏夹
-    python scripts/crawl_collection.py --collection 860134416
-
-    # 爬取指定数量
-    python scripts/crawl_collection.py --collection 860134416 --count 100
-
-    # 爬取并按类型过滤
-    python scripts/crawl_collection.py --collection 860134416 --type answer
-    python scripts/crawl_collection.py --collection 860134416 --type article
+    python scripts/crawl_collection.py --collection 860134416 --count 200
 """
 
 import asyncio
@@ -20,30 +12,15 @@ import json
 import os
 import sys
 from pathlib import Path
-from datetime import datetime
 from typing import List, Dict
-from dataclasses import dataclass
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from playwright.async_api import async_playwright
 
 
-@dataclass
-class CollectionItem:
-    """收藏夹条目"""
-    title: str
-    url: str
-    item_type: str  # answer 或 article
-    author: str
-    author_url: str
-    content: str
-    vote_count: int
-    created_time: str = ""
-
-
 class CollectionCrawler:
-    """收藏夹爬虫"""
+    """收藏夹爬虫 - 支持分页"""
 
     def __init__(self, auth_file: str = "data/zhihu_auth.json", headless: bool = False):
         self.auth_file = auth_file
@@ -91,50 +68,41 @@ class CollectionCrawler:
         if self.browser:
             await self.browser.close()
 
-    def get_collection_info(self, collection_id: str) -> Dict:
-        """获取收藏夹信息"""
-        # 访问收藏夹页面
-        url = f"https://www.zhihu.com/collection/{collection_id}"
-        return {
-            "id": collection_id,
-            "url": url
-        }
-
     async def crawl(
         self,
         collection_id: str,
-        count: int = 100,
-        item_type: str = "all"  # all/answer/article
+        count: int = 200,
+        item_type: str = "all"
     ) -> List[Dict]:
-        """爬取收藏夹"""
+        """爬取收藏夹 - 支持分页"""
 
         collection_url = f"https://www.zhihu.com/collection/{collection_id}"
         await self.page.goto(collection_url, wait_until="domcontentloaded")
-        await asyncio.sleep(3)
+        await asyncio.sleep(5)
+
+        # 获取收藏夹信息
+        info = await self.page.evaluate("""() => {
+            const descEl = document.querySelector('[class*="description"]');
+            const description = descEl ? descEl.innerText.trim() : '';
+            return { description };
+        }""")
 
         print(f"\n开始爬取收藏夹 {collection_id}...")
+        print(f"  收藏夹信息: {info['description']}")
         print(f"  目标数量: {count}")
         print(f"  类型过滤: {item_type}")
         print("-" * 50)
 
         items = []
-        scroll_count = 0
-        max_scrolls = 30
+        page_num = 1
 
-        while len(items) < count and scroll_count < max_scrolls:
-            # 获取已有的URL列表
-            existing_urls_list = [item['url'] for item in items]
+        while len(items) < count:
+            print(f"\n--- 第 {page_num} 页 ---")
 
-            # 将参数传入JavaScript
-            js_args = {"existingUrls": existing_urls_list, "itemType": item_type}
-
-            new_items = await self.page.evaluate("""
-                (params) => {
-                const existingUrls = params.existingUrls;
-                const itemType = params.itemType;
-
+            # 获取当前页面内容
+            new_items = await self.page.evaluate("""(itemType) => {
                 const results = [];
-                const allItems = document.querySelectorAll('.List-item, [class*="Item"], [class*="Collection"], .CollectionItem');
+                const allItems = document.querySelectorAll('.ContentItem');
 
                 allItems.forEach(item => {
                     try {
@@ -158,32 +126,29 @@ class CollectionCrawler:
 
                         // 获取作者
                         let author = '';
-                        let authorUrl = '';
-                        const authorEl = item.querySelector('.AuthorInfo-name, [class*="author"] a, a[href*="/people/"]');
+                        const authorEl = item.querySelector('.AuthorInfo-name, a[href*="/people/"]');
                         if (authorEl) {
                             author = authorEl.innerText.trim();
-                            authorUrl = authorEl.href || '';
                         }
 
                         // 获取点赞数
                         let voteCount = 0;
-                        const voteEl = item.querySelector('.VoteButton, [class*="vote"]');
+                        const voteEl = item.querySelector('.VoteButton');
                         if (voteEl) {
                             const voteText = voteEl.innerText.trim();
                             voteCount = parseInt(voteText.replace(/[^0-9]/g, '')) || 0;
                         }
 
                         // 获取内容摘要
-                        const contentEl = item.querySelector('.RichText, .content, [class*="excerpt"]');
+                        const contentEl = item.querySelector('.RichText, [class*="excerpt"]');
                         const content = contentEl ? contentEl.innerText.trim() : '';
 
-                        if (title && url && !existingUrls.includes(url)) {
+                        if (title && url) {
                             results.push({
                                 title: title,
                                 url: url,
                                 item_type: type,
                                 author: author,
-                                author_url: authorUrl,
                                 content: content,
                                 vote_count: voteCount
                             });
@@ -192,77 +157,120 @@ class CollectionCrawler:
                 });
 
                 return results;
-            }""", js_args)
+            }""", item_type)
 
             # 去重
-            existing_urls_list = [item['url'] for item in items]
+            existing_urls = {item['url'] for item in items}
+            new_count = 0
             for item in new_items:
-                if item['url'] not in existing_urls_list:
+                if item['url'] not in existing_urls:
                     items.append(item)
-                    existing_urls_list.append(item['url'])
+                    existing_urls.add(item['url'])
+                    new_count += 1
 
-            scroll_count += 1
-            print(f"  滚动 {scroll_count}: 共 {len(items)} 条")
+            print(f"  本页新增: {new_count} 条, 总计: {len(items)} 条")
 
             if len(items) >= count:
                 break
 
-            await self.page.evaluate("window.scrollBy(0, 1200);")
-            await asyncio.sleep(2)
+            # 尝试点击"下一页"
+            try:
+                # 查找下一页按钮
+                next_btn = await self.page.query_selector('.Pagination-next, .Paginator-next, button:has-text("下一页"), a:has-text("下一页"), [class*="next"]')
+
+                if next_btn:
+                    # 检查是否禁用
+                    is_disabled = await next_btn.get_attribute('disabled')
+                    if is_disabled:
+                        print(f"  已到最后一页")
+                        break
+
+                    print(f"  点击下一页...")
+                    await next_btn.click()
+                    await asyncio.sleep(3)
+                    page_num += 1
+                else:
+                    # 尝试使用键盘导航
+                    print(f"  尝试按键盘右键翻页...")
+                    await self.page.keyboard.press("ArrowRight")
+                    await asyncio.sleep(3)
+
+                    # 检查URL是否变化
+                    current_url = self.page.url
+                    await asyncio.sleep(1)
+
+                    # 检查是否还有内容
+                    check_more = await self.page.evaluate("""() => {
+                        const nextBtn = document.querySelector('.Pagination-next, .Paginator-next, [class*="next"]');
+                        return nextBtn ? true : false;
+                    }""")
+
+                    if not check_more:
+                        print(f"  没有更多分页按钮，可能已到最后一页")
+                        break
+
+                    page_num += 1
+
+            except Exception as e:
+                print(f"  翻页失败: {str(e)[:50]}")
+                break
 
         # 限制数量
         items = items[:count]
 
-        # 获取完整内容
         print(f"\n获取完整内容 ({len(items)} 条)...")
-        await self._fetch_content(items)
+
+        # 获取完整内容（阈值设为500，列表页摘要通常<200字符）
+        for i, item in enumerate(items):
+            if not item.get('content') or len(item.get('content', '')) < 500:
+                print(f"  [{i+1}/{len(items)}] 获取: {item['title'][:30]}...")
+                try:
+                    await self.page.goto(item['url'], wait_until="domcontentloaded", timeout=30000)
+                    await asyncio.sleep(2)
+
+                    # 滚动到页面底部触发懒加载
+                    await self.page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                    await asyncio.sleep(1)
+
+                    content = await self.page.evaluate("""() => {
+                        // 优先查找回答容器
+                        const answerEl = document.querySelector('.zm-item-answer, .AnswerItem, .ContentItem AnswerItem');
+                        if (answerEl && answerEl.innerText.trim().length > 100) {
+                            return answerEl.innerText.trim();
+                        }
+
+                        // 备用方案
+                        const selectors = [
+                            '.zm-item-answer .RichText',
+                            '.AnswerItem .RichText',
+                            '.article .RichText',
+                            '.Post-content',
+                            '.RichText'
+                        ];
+
+                        for (const sel of selectors) {
+                            const el = document.querySelector(sel);
+                            if (el && el.innerText.trim().length > 30) {
+                                return el.innerText.trim();
+                            }
+                        }
+                        return '';
+                    }""")
+
+                    if content:
+                        item['content'] = content
+
+                    if (i + 1) % 10 == 0:
+                        print(f"      >>> 已处理 {i+1} 条")
+
+                    await asyncio.sleep(1.5)
+
+                except Exception as e:
+                    print(f"      错误: {str(e)[:30]}")
 
         print(f"\n✓ 完成! 共获取 {len(items)} 条")
 
         return items
-
-    async def _fetch_content(self, items: List[Dict]):
-        """获取每个条目的完整内容"""
-        for i, item in enumerate(items):
-            url = item.get('url', '')
-            title = item.get('title', '')[:35]
-
-            print(f"  [{i+1}/{len(items)}] {title}...")
-
-            try:
-                await self.page.goto(url, wait_until="domcontentloaded")
-                await asyncio.sleep(2)
-
-                content = await self.page.evaluate("""() => {
-                    // 尝试多种选择器
-                    const selectors = [
-                        '.zm-item-answer .RichText',
-                        '.AnswerItem .RichText',
-                        '.article .RichText',
-                        '.Post-content',
-                        '.RichText'
-                    ];
-
-                    for (const sel of selectors) {
-                        const el = document.querySelector(sel);
-                        if (el && el.innerText.trim().length > 30) {
-                            return el.innerText.trim();
-                        }
-                    }
-
-                    return '';
-                }""")
-
-                if content:
-                    item['content'] = content
-
-                if (i + 1) % 10 == 0:
-                    print(f"      >>> 已处理 {i+1} 条")
-
-                await asyncio.sleep(1.5)
-
-            except Exception as e:
-                print(f"      错误: {str(e)[:30]}")
 
     def save_results(self, items: List[Dict], output_file: str):
         """保存结果"""
@@ -281,16 +289,15 @@ class CollectionCrawler:
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="知乎收藏夹爬虫")
+    parser = argparse.ArgumentParser(description="知乎收藏夹爬虫 - 支持分页")
     parser.add_argument("--collection", type=str, required=True, help="收藏夹ID")
-    parser.add_argument("--count", type=int, default=100, help="爬取数量")
+    parser.add_argument("--count", type=int, default=200, help="爬取数量")
     parser.add_argument("--type", type=str, default="all", choices=["all", "answer", "article"], help="类型过滤")
     parser.add_argument("--output", type=str, default="output/collection_{id}.json", help="输出文件")
     parser.add_argument("--headless", action="store_true", help="无头模式")
 
     args = parser.parse_args()
 
-    # 处理输出路径
     output_file = args.output.format(id=args.collection)
 
     async with CollectionCrawler(headless=args.headless) as crawler:
