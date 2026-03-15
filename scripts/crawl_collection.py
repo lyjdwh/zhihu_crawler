@@ -37,11 +37,11 @@ class CollectionCrawler:
         await self.close()
 
     async def init(self):
-        playwright = await async_playwright().start()
+        self.playwright = await async_playwright().start()
 
-        self.browser = await playwright.chromium.launch(
+        self.browser = await self.playwright.chromium.launch(
             headless=self.headless,
-            args=['--disable-blink-features=AutomationControlled']
+            args=["--disable-blink-features=AutomationControlled"],
         )
 
         context_options = {
@@ -67,12 +67,11 @@ class CollectionCrawler:
     async def close(self):
         if self.browser:
             await self.browser.close()
+        if self.playwright:
+            await self.playwright.stop()
 
     async def crawl(
-        self,
-        collection_id: str,
-        count: int = 200,
-        item_type: str = "all"
+        self, collection_id: str, count: int = 200, item_type: str = "all"
     ) -> List[Dict]:
         """爬取收藏夹 - 支持分页"""
 
@@ -100,7 +99,8 @@ class CollectionCrawler:
             print(f"\n--- 第 {page_num} 页 ---")
 
             # 获取当前页面内容
-            new_items = await self.page.evaluate("""(itemType) => {
+            new_items = await self.page.evaluate(
+                """(itemType) => {
                 const results = [];
                 const allItems = document.querySelectorAll('.ContentItem');
 
@@ -157,15 +157,17 @@ class CollectionCrawler:
                 });
 
                 return results;
-            }""", item_type)
+            }""",
+                item_type,
+            )
 
             # 去重
-            existing_urls = {item['url'] for item in items}
+            existing_urls = {item["url"] for item in items}
             new_count = 0
             for item in new_items:
-                if item['url'] not in existing_urls:
+                if item["url"] not in existing_urls:
                     items.append(item)
-                    existing_urls.add(item['url'])
+                    existing_urls.add(item["url"])
                     new_count += 1
 
             print(f"  本页新增: {new_count} 条, 总计: {len(items)} 条")
@@ -175,12 +177,23 @@ class CollectionCrawler:
 
             # 尝试点击"下一页"
             try:
-                # 查找下一页按钮
-                next_btn = await self.page.query_selector('.Pagination-next, .Paginator-next, button:has-text("下一页"), a:has-text("下一页"), [class*="next"]')
+                # 查找下一页按钮 - 使用多个选择器尝试
+                next_btn = None
+                selectors = [
+                    ".Pagination-next",
+                    ".Paginator-next",
+                    '[class*="next"]',
+                    'button:has-text("下一页")',
+                    'a:has-text("下一页")',
+                ]
+                for sel in selectors:
+                    next_btn = await self.page.query_selector(sel)
+                    if next_btn:
+                        break
 
                 if next_btn:
                     # 检查是否禁用
-                    is_disabled = await next_btn.get_attribute('disabled')
+                    is_disabled = await next_btn.get_attribute("disabled")
                     if is_disabled:
                         print(f"  已到最后一页")
                         break
@@ -222,14 +235,18 @@ class CollectionCrawler:
 
         # 获取完整内容（阈值设为500，列表页摘要通常<200字符）
         for i, item in enumerate(items):
-            if not item.get('content') or len(item.get('content', '')) < 500:
-                print(f"  [{i+1}/{len(items)}] 获取: {item['title'][:30]}...")
+            if not item.get("content") or len(item.get("content", "")) < 500:
+                print(f"  [{i + 1}/{len(items)}] 获取: {item['title'][:30]}...")
                 try:
-                    await self.page.goto(item['url'], wait_until="domcontentloaded", timeout=30000)
+                    await self.page.goto(
+                        item["url"], wait_until="domcontentloaded", timeout=30000
+                    )
                     await asyncio.sleep(2)
 
                     # 滚动到页面底部触发懒加载
-                    await self.page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                    await self.page.evaluate(
+                        "window.scrollTo(0, document.body.scrollHeight)"
+                    )
                     await asyncio.sleep(1)
 
                     content = await self.page.evaluate("""() => {
@@ -258,10 +275,10 @@ class CollectionCrawler:
                     }""")
 
                     if content:
-                        item['content'] = content
+                        item["content"] = content
 
                     if (i + 1) % 10 == 0:
-                        print(f"      >>> 已处理 {i+1} 条")
+                        print(f"      >>> 已处理 {i + 1} 条")
 
                     await asyncio.sleep(1.5)
 
@@ -277,14 +294,14 @@ class CollectionCrawler:
         output_path = Path(output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             json.dump(items, f, ensure_ascii=False, indent=2)
 
         print(f"\n✓ 结果已保存到: {output_path}")
 
         # 统计
-        answers = sum(1 for i in items if i.get('item_type') == 'answer')
-        articles = sum(1 for i in items if i.get('item_type') == 'article')
+        answers = sum(1 for i in items if i.get("item_type") == "answer")
+        articles = sum(1 for i in items if i.get("item_type") == "article")
         print(f"  回答: {answers}, 文章: {articles}")
 
 
@@ -292,8 +309,16 @@ async def main():
     parser = argparse.ArgumentParser(description="知乎收藏夹爬虫 - 支持分页")
     parser.add_argument("--collection", type=str, required=True, help="收藏夹ID")
     parser.add_argument("--count", type=int, default=200, help="爬取数量")
-    parser.add_argument("--type", type=str, default="all", choices=["all", "answer", "article"], help="类型过滤")
-    parser.add_argument("--output", type=str, default="output/collection_{id}.json", help="输出文件")
+    parser.add_argument(
+        "--type",
+        type=str,
+        default="all",
+        choices=["all", "answer", "article"],
+        help="类型过滤",
+    )
+    parser.add_argument(
+        "--output", type=str, default="output/collection_{id}.json", help="输出文件"
+    )
     parser.add_argument("--headless", action="store_true", help="无头模式")
 
     args = parser.parse_args()
@@ -302,9 +327,7 @@ async def main():
 
     async with CollectionCrawler(headless=args.headless) as crawler:
         items = await crawler.crawl(
-            collection_id=args.collection,
-            count=args.count,
-            item_type=args.type
+            collection_id=args.collection, count=args.count, item_type=args.type
         )
 
         crawler.save_results(items, output_file)

@@ -2,6 +2,7 @@
 知乎 API 封装模块
 提供知乎数据获取的核心功能
 """
+
 import asyncio
 import json
 import random
@@ -15,6 +16,7 @@ from playwright.async_api import async_playwright, Page, Browser, BrowserContext
 @dataclass
 class ZhihuUser:
     """知乎用户信息"""
+
     id: str
     name: str
     url_token: str
@@ -26,6 +28,7 @@ class ZhihuUser:
 @dataclass
 class ZhihuAnswer:
     """知乎回答数据"""
+
     id: str
     type: str = "answer"
     question: Optional[Dict[str, Any]] = None
@@ -43,7 +46,7 @@ class ZhihuAPI:
         self,
         auth_file: str = "data/zhihu_auth.json",
         headless: bool = True,
-        request_delay: float = 2.0
+        request_delay: float = 2.0,
     ):
         self.auth_file = auth_file
         self.headless = headless
@@ -52,7 +55,7 @@ class ZhihuAPI:
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
-        self._playwright = None
+        self.playwright = None
 
     async def __aenter__(self):
         """异步上下文管理器入口"""
@@ -65,20 +68,21 @@ class ZhihuAPI:
 
     async def init(self):
         """初始化浏览器"""
-        playwright = await async_playwright().start()
+        self.playwright = await async_playwright().start()
 
         # 启动浏览器
-        self.browser = await playwright.chromium.launch(
+        self.browser = await self.playwright.chromium.launch(
             headless=self.headless,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--disable-web-security",
-                "--disable-features=IsolateOrigins,site-per-process"
-            ]
+                "--disable-features=IsolateOrigins,site-per-process",
+            ],
         )
 
         # 加载认证信息
         import os
+
         auth_path = os.path.abspath(self.auth_file)
 
         context_options = {
@@ -113,6 +117,8 @@ class ZhihuAPI:
         """关闭浏览器"""
         if self.browser:
             await self.browser.close()
+        if self.playwright:
+            await self.playwright.stop()
 
     async def _api_request(self, url: str, max_retries: int = 5) -> Optional[Dict]:
         """发送 API 请求"""
@@ -124,7 +130,8 @@ class ZhihuAPI:
                     await asyncio.sleep(delay)
 
                 # 使用 page.evaluate 在浏览器环境中发起请求
-                result = await self.page.evaluate("""async (targetUrl) => {
+                result = await self.page.evaluate(
+                    """async (targetUrl) => {
                     try {
                         const response = await fetch(targetUrl, {
                             method: 'GET',
@@ -150,7 +157,9 @@ class ZhihuAPI:
                     } catch (err) {
                         return { success: false, error: err.message };
                     }
-                }""", url)
+                }""",
+                    url,
+                )
 
                 if result.get("success"):
                     return result.get("data")
@@ -177,10 +186,12 @@ class ZhihuAPI:
             url_token=url_token,
             answer_count=data.get("answer_count", 0),
             article_count=data.get("articles_count", 0),
-            follower_count=data.get("follower_count", 0)
+            follower_count=data.get("follower_count", 0),
         )
 
-    async def get_answers(self, user_id: str, offset: int = 0, limit: int = 20) -> tuple[List[ZhihuAnswer], bool]:
+    async def get_answers(
+        self, user_id: str, offset: int = 0, limit: int = 20
+    ) -> tuple[List[ZhihuAnswer], bool]:
         """获取用户回答列表"""
         url = f"{ZHIHU_CONFIG['api_url']}/members/{user_id}/answers?include=data[*].content,voteup_count,comment_count,created_time,question&offset={offset}&limit={limit}&sort_by=created"
 
@@ -200,20 +211,31 @@ class ZhihuAPI:
                 type="answer",
                 question={
                     "id": str(question_data.get("id", "")),
-                    "title": question_data.get("title", "")
-                } if question_data else None,
+                    "title": question_data.get("title", ""),
+                }
+                if question_data
+                else None,
                 content=item.get("content", ""),
                 voteup_count=item.get("voteup_count", 0),
                 comment_count=item.get("comment_count", 0),
                 created_time=item.get("created_time", 0),
-                url=f"https://www.zhihu.com/question/{question_data.get('id', '')}/answer/{item.get('id', '')}" if question_data else ""
+                url=f"https://www.zhihu.com/question/{question_data.get('id', '')}/answer/{item.get('id', '')}"
+                if question_data
+                else "",
             )
             answers.append(answer)
 
         return answers, not is_end
 
-    async def crawl_all_answers(self, user_id: str, user_name: str, expected_count: int = 0,
-                                checkpoint_manager=None, storage=None, progress_callback=None):
+    async def crawl_all_answers(
+        self,
+        user_id: str,
+        user_name: str,
+        expected_count: int = 0,
+        checkpoint_manager=None,
+        storage=None,
+        progress_callback=None,
+    ):
         """爬取用户所有回答"""
         offset = 0
         total_collected = 0
@@ -244,11 +266,14 @@ class ZhihuAPI:
 
             # 更新检查点
             if checkpoint_manager:
-                checkpoint_manager.set(f"{user_name}_progress", {
-                    "offset": offset,
-                    "collected": total_collected,
-                    "timestamp": datetime.now().isoformat()
-                })
+                checkpoint_manager.set(
+                    f"{user_name}_progress",
+                    {
+                        "offset": offset,
+                        "collected": total_collected,
+                        "timestamp": datetime.now().isoformat(),
+                    },
+                )
 
             # 进度回调
             if progress_callback:
@@ -267,7 +292,9 @@ class ZhihuAPI:
         # 关闭存储
         if storage:
             stats = storage.close()
-            print(f"\n  数据保存完成: {stats['total_saved']} 条，{stats['batch_count']} 个文件")
+            print(
+                f"\n  数据保存完成: {stats['total_saved']} 条，{stats['batch_count']} 个文件"
+            )
 
         return total_collected
 
@@ -275,5 +302,6 @@ class ZhihuAPI:
 # 导入配置
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent))
 from config import ZHIHU_CONFIG, CRAWLER_CONFIG
