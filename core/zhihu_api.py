@@ -6,11 +6,28 @@
 import asyncio
 import json
 import random
+import os
+from pathlib import Path
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 from datetime import datetime
 
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext
+
+from core.browser import BrowserManager
+
+# 导入配置（放在文件末尾避免循环导入）
+ZHIHU_CONFIG = {
+    "base_url": "https://www.zhihu.com",
+    "api_url": "https://www.zhihu.com/api/v4",
+}
+
+CRAWLER_CONFIG = {
+    "batch_size": 50,
+    "request_delay": 2.0,
+    "max_retries": 5,
+    "headless": True,
+}
 
 
 @dataclass
@@ -52,10 +69,8 @@ class ZhihuAPI:
         self.headless = headless
         self.request_delay = request_delay
 
-        self.browser: Optional[Browser] = None
-        self.context: Optional[BrowserContext] = None
+        self.browser_manager: Optional[BrowserManager] = None
         self.page: Optional[Page] = None
-        self.playwright = None
 
     async def __aenter__(self):
         """异步上下文管理器入口"""
@@ -68,57 +83,17 @@ class ZhihuAPI:
 
     async def init(self):
         """初始化浏览器"""
-        self.playwright = await async_playwright().start()
-
-        # 启动浏览器
-        self.browser = await self.playwright.chromium.launch(
+        self.browser_manager = BrowserManager(
+            auth_file=self.auth_file,
             headless=self.headless,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--disable-web-security",
-                "--disable-features=IsolateOrigins,site-per-process",
-            ],
         )
-
-        # 加载认证信息
-        import os
-
-        auth_path = os.path.abspath(self.auth_file)
-
-        context_options = {
-            "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "viewport": {"width": 1920, "height": 1080},
-        }
-
-        if os.path.exists(auth_path):
-            context_options["storage_state"] = auth_path
-
-        # 创建上下文
-        self.context = await self.browser.new_context(**context_options)
-
-        # 添加初始化脚本隐藏自动化特征
-        await self.context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            });
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5]
-            });
-        """)
-
-        # 创建页面
-        self.page = await self.context.new_page()
-
-        # 访问知乎首页建立会话
-        await self.page.goto("https://www.zhihu.com", wait_until="domcontentloaded")
-        await asyncio.sleep(3)
+        await self.browser_manager.init()
+        self.page = self.browser_manager.page
 
     async def close(self):
         """关闭浏览器"""
-        if self.browser:
-            await self.browser.close()
-        if self.playwright:
-            await self.playwright.stop()
+        if self.browser_manager:
+            await self.browser_manager.close()
 
     async def _api_request(self, url: str, max_retries: int = 5) -> Optional[Dict]:
         """发送 API 请求"""
@@ -297,11 +272,3 @@ class ZhihuAPI:
             )
 
         return total_collected
-
-
-# 导入配置
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent))
-from config import ZHIHU_CONFIG, CRAWLER_CONFIG

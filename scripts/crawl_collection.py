@@ -12,11 +12,11 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from playwright.async_api import async_playwright
+from core.browser import BrowserManager
 
 
 class CollectionCrawler:
@@ -25,8 +25,7 @@ class CollectionCrawler:
     def __init__(self, auth_file: str = "data/zhihu_auth.json", headless: bool = False):
         self.auth_file = auth_file
         self.headless = headless
-        self.browser = None
-        self.context = None
+        self.browser_manager: Optional[BrowserManager] = None
         self.page = None
 
     async def __aenter__(self):
@@ -37,38 +36,16 @@ class CollectionCrawler:
         await self.close()
 
     async def init(self):
-        self.playwright = await async_playwright().start()
-
-        self.browser = await self.playwright.chromium.launch(
+        self.browser_manager = BrowserManager(
+            auth_file=self.auth_file,
             headless=self.headless,
-            args=["--disable-blink-features=AutomationControlled"],
         )
-
-        context_options = {
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "viewport": {"width": 1920, "height": 1080},
-        }
-
-        if os.path.exists(self.auth_file):
-            context_options["storage_state"] = self.auth_file
-
-        self.context = await self.browser.new_context(**context_options)
-
-        await self.context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        """)
-
-        self.page = await self.context.new_page()
-        self.page.set_default_timeout(60000)
-
-        await self.page.goto("https://www.zhihu.com", wait_until="domcontentloaded")
-        await asyncio.sleep(3)
+        await self.browser_manager.init()
+        self.page = self.browser_manager.page
 
     async def close(self):
-        if self.browser:
-            await self.browser.close()
-        if self.playwright:
-            await self.playwright.stop()
+        if self.browser_manager:
+            await self.browser_manager.close()
 
     async def crawl(
         self, collection_id: str, count: int = 200, item_type: str = "all"
@@ -225,7 +202,7 @@ class CollectionCrawler:
                     page_num += 1
 
             except Exception as e:
-                print(f"  翻页失败: {str(e)[:50]}")
+                print(f"  翻页失败: {type(e).__name__}: {e}")
                 break
 
         # 限制数量
@@ -283,7 +260,7 @@ class CollectionCrawler:
                     await asyncio.sleep(1.5)
 
                 except Exception as e:
-                    print(f"      错误: {str(e)[:30]}")
+                    print(f"      错误: {type(e).__name__}: {e}")
 
         print(f"\n✓ 完成! 共获取 {len(items)} 条")
 
