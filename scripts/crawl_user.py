@@ -259,7 +259,7 @@ class ZhihuCrawler:
                 continue
 
         # 2. 相对时间: "x 小时前"、"x 天前"、"昨天"、"前天"
-        now = datetime.now()
+        now = datetime.now().astimezone()
 
         hours_match = re.search(r"(\d+)\s*小时前", date_str)
         if hours_match:

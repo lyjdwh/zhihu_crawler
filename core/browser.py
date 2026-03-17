@@ -81,6 +81,8 @@ class BrowserManager:
 
     async def close(self):
         """关闭浏览器"""
+        if self.context:
+            await self.context.close()
         if self.browser:
             await self.browser.close()
         if self.playwright:
