@@ -1,14 +1,16 @@
-# 知乎爬虫工具 (Python 重构版)
+# 知乎爬虫工具
 
-使用 Python 重构的知乎数据爬取工具，基于 Playwright 实现浏览器自动化。
+基于 Playwright 的知乎数据爬取工具，支持爬取用户回答、收藏夹内容，用于构建每日股市推荐系统。
 
 ## 项目特点
 
-- **Python 重构**: 使用 Python 3.8+ 和 asyncio 实现异步爬取
+- **异步爬取**: 使用 Python asyncio 实现高效爬取
 - **模块化设计**: 清晰的模块划分，易于维护和扩展
 - **断点续爬**: 支持检查点机制，中断后可从上次位置继续
-- **数据分批保存**: 自动分批保存数据，避免内存溢出
-- **类型注解**: 完整的类型注解，提高代码可读性
+- **日期筛选**: 支持按日期范围筛选回答
+- **主题过滤**: 支持按关键词过滤特定主题的回答
+- **多种数据源**: 支持爬取用户回答和收藏夹内容
+- **完整内容获取**: 自动展开完整回答内容
 
 ## 项目结构
 
@@ -16,103 +18,157 @@
 zhihu_crawler/
 ├── core/                       # 核心模块
 │   ├── __init__.py
-│   ├── config.py              # 配置文件
+│   ├── config.py              # 配置文件（目标用户、爬虫配置）
+│   ├── browser.py             # 浏览器管理（反爬措施、Playwright 封装）
 │   └── zhihu_api.py           # 知乎 API 封装
 ├── utils/                      # 工具模块
 │   ├── __init__.py
 │   ├── checkpoint.py          # 检查点管理
 │   └── storage.py             # 数据存储
-├── scripts/                    # 脚本目录
-│   ├── crawl_aote.py          # 爬取奥特之父
+├── scripts/                    # 爬虫脚本
+│   ├── crawl_user.py          # 用户回答爬虫（支持日期/主题过滤）
+│   ├── crawl_collection.py    # 收藏夹爬虫（支持分页）
 │   └── save_auth.py           # 保存登录凭证
 ├── output/                     # 输出目录
-├── data/                       # 数据目录
+├── data/                       # 数据目录（登录凭证）
+├── docs/                       # 文档
 ├── requirements.txt            # 依赖列表
-└── README.md                   # 项目说明
+└── setup.py                    # 安装配置
 ```
 
-## 安装依赖
+## 安装
 
 ```bash
+# 克隆项目
+git clone https://github.com/lyjdwh/zhihu_crawler.git
+cd zhihu_crawler
+
+# 安装依赖
 pip install -r requirements.txt
 
 # 安装 Playwright 浏览器
 playwright install chromium
 ```
 
-## 使用方法
+## 快速开始
 
 ### 1. 保存登录凭证
 
 首次使用需要先登录知乎并保存凭证：
 
 ```bash
-cd zhihu_crawler
 python scripts/save_auth.py
 ```
 
 脚本会打开浏览器，请手动登录知乎，登录成功后脚本会自动保存凭证。
 
-### 2. 爬取数据
-
-保存凭证后，运行爬取脚本：
+### 2. 爬取用户回答
 
 ```bash
-python scripts/crawl_aote.py
+# 爬取指定用户金融相关回答
+python scripts/crawl_user.py --user xu-ze-qiu --topic finance --count 100
+
+# 按日期筛选
+python scripts/crawl_user.py --user xu-ze-qiu --after-date 2026-03-01 --topic finance
+
+# 组合使用
+python scripts/crawl_user.py --user xu-ze-qiu --count 50 --topic finance --after-date 2026-01-01
+
+# 爬取 MR Dang
+python scripts/crawl_user.py --user mr-dang-77 --topic finance --count 100
 ```
 
-脚本会自动爬取奥特之父的所有知乎回答，并保存到 `output/` 目录。
+### 3. 爬取收藏夹
 
-### 3. 断点续爬
+```bash
+python scripts/crawl_collection.py --collection 860134416 --count 200
+```
 
-如果爬取过程中断，再次运行脚本会自动从上次的位置继续爬取。
+## 命令行参数
+
+### crawl_user.py
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--user` | 用户 url_token | 必填 |
+| `--topic` | 主题过滤关键词 | finance |
+| `--count` | 目标数量 | 100 |
+| `--after-date` | 筛选日期之后 | 无 |
+| `--before-date` | 筛选日期之前 | 无 |
+| `--headless` | 无头模式 | true |
+
+### crawl_collection.py
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--collection` | 收藏夹 ID | 必填 |
+| `--count` | 目标数量 | 100 |
+| `--headless` | 无头模式 | true |
+
+### 主题过滤选项
+
+- `finance` - 金融/投资/股市
+- `tech` - 科技/AI/手机
+- `international` - 国际形势
+- `culture` - 动漫/电影/游戏
+- `life` - 生活/职场/情感
 
 ## 配置文件
 
 编辑 `core/config.py` 可以修改配置：
 
 ```python
-# 爬虫配置
-CRAWLER_CONFIG = {
-    "batch_size": 50,           # 每批保存的数据量
-    "request_delay": 2.0,     # 请求间隔（秒）
-    "max_retries": 5,          # 最大重试次数
-    "headless": True,          # 是否无头模式
-}
-
 # 目标用户
 TARGET_USERS = {
-    "奥特之父": {
+    "xu-ze-qiu": {
         "url_token": "xu-ze-qiu",
         "expected_answers": 4832,
     },
+    "mr-dang-77": {
+        "url_token": "mr-dang-77",
+        "expected_answers": 142,
+    }
+}
+
+# 爬虫配置
+CRAWLER_CONFIG = {
+    "batch_size": 50,
+    "request_delay": 2.0,
+    "max_retries": 5,
+    "headless": True,
 }
 ```
 
 ## 数据输出格式
 
-爬取的数据以 JSON 格式保存，每条回答包含以下字段：
+爬取的数据以 JSON 格式保存在 `output/` 目录：
 
 ```json
 {
-  "id": "123456789",
-  "type": "answer",
-  "question": {
-    "id": "987654321",
-    "title": "问题标题"
-  },
-  "content": "<p>回答内容（HTML格式）</p>",
-  "voteup_count": 100,
-  "comment_count": 50,
-  "created_time": 1234567890,
-  "url": "https://www.zhihu.com/question/.../answer/..."
+  "answer_id": "123456789",
+  "question_id": "987654321",
+  "question_title": "问题标题",
+  "question_url": "https://www.zhihu.com/question/...",
+  "content": "回答内容",
+  "vote_count": 100,
+  "created_time": "2026-03-15"
 }
 ```
 
+## 每日股市推荐系统
+
+本项目可用于构建每日股市推荐系统：
+
+1. 爬取知乎专家（如 xu-ze-qiu、mr-dang-77）的金融回答
+2. 分析提取股票/ETF 推荐信息
+3. 生成每日股市推荐报告
+
+详细说明见 [docs/每日荐股系统需求.md](./docs/每日荐股系统需求.md)
+
 ## 注意事项
 
-1. **频率限制**: 知乎有反爬机制，请合理设置请求间隔（默认2秒）
-2. **登录状态**: 登录凭证会过期，如遇到403错误请重新运行 `save_auth.py`
+1. **频率限制**: 知乎有反爬机制，请合理设置请求间隔
+2. **登录状态**: 登录凭证会过期，如遇到 403 错误请重新运行 `save_auth.py`
 3. **数据量**: 大量数据爬取可能需要较长时间，请保持网络稳定
 4. **合法性**: 请遵守知乎用户协议和相关法律法规
 
@@ -123,4 +179,3 @@ MIT License
 ## 贡献
 
 欢迎提交 Issue 和 PR！
-
