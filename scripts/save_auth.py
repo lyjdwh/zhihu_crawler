@@ -104,7 +104,7 @@ async def main():
             print("登录凭证保存成功！")
             print("=" * 60)
             print("\n现在可以运行爬取脚本：")
-            print("  python scripts/crawl_aote.py")
+            print("  python scripts/crawl_user.py --user xu-ze-qiu --topic finance")
         else:
             print("\n✗ 保存失败")
             sys.exit(1)

@@ -4,30 +4,15 @@
 """
 
 import asyncio
-import json
 import random
-import os
-from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 from datetime import datetime
 
-from playwright.async_api import async_playwright, Page, Browser, BrowserContext
+from playwright.async_api import Page
 
 from core.browser import BrowserManager
-
-# 导入配置（放在文件末尾避免循环导入）
-ZHIHU_CONFIG = {
-    "base_url": "https://www.zhihu.com",
-    "api_url": "https://www.zhihu.com/api/v4",
-}
-
-CRAWLER_CONFIG = {
-    "batch_size": 50,
-    "request_delay": 2.0,
-    "max_retries": 5,
-    "headless": True,
-}
+from core.config import ZHIHU_CONFIG, CRAWLER_CONFIG
 
 
 @dataclass
@@ -166,7 +151,7 @@ class ZhihuAPI:
 
     async def get_answers(
         self, user_id: str, offset: int = 0, limit: int = 20
-    ) -> tuple[List[ZhihuAnswer], bool]:
+    ) -> Tuple[List[ZhihuAnswer], bool]:
         """获取用户回答列表"""
         url = f"{ZHIHU_CONFIG['api_url']}/members/{user_id}/answers?include=data[*].content,voteup_count,comment_count,created_time,question&offset={offset}&limit={limit}&sort_by=created"
 

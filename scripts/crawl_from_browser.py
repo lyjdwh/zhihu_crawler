@@ -5,8 +5,6 @@
 
 import asyncio
 import json
-import os
-import sys
 from pathlib import Path
 
 from playwright.async_api import async_playwright
@@ -37,7 +35,7 @@ async def main():
             "viewport": {"width": 1920, "height": 1080},
         }
 
-        if os.path.exists(auth_file):
+        if Path(auth_file).exists():
             context_options["storage_state"] = auth_file
 
         context = await browser.new_context(**context_options)

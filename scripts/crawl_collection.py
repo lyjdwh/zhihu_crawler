@@ -9,7 +9,6 @@
 import asyncio
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -169,9 +168,11 @@ class CollectionCrawler:
                         break
 
                 if next_btn:
-                    # 检查是否禁用
+                    # 检查是否禁用（知乎用 CSS 类名和 aria-disabled 标记禁用状态）
                     is_disabled = await next_btn.get_attribute("disabled")
-                    if is_disabled:
+                    class_name = await next_btn.get_attribute("class") or ""
+                    aria_disabled = await next_btn.get_attribute("aria-disabled")
+                    if is_disabled or "disabled" in class_name or aria_disabled == "true":
                         print(f"  已到最后一页")
                         break
 
@@ -180,26 +181,8 @@ class CollectionCrawler:
                     await asyncio.sleep(3)
                     page_num += 1
                 else:
-                    # 尝试使用键盘导航
-                    print(f"  尝试按键盘右键翻页...")
-                    await self.page.keyboard.press("ArrowRight")
-                    await asyncio.sleep(3)
-
-                    # 检查URL是否变化
-                    current_url = self.page.url
-                    await asyncio.sleep(1)
-
-                    # 检查是否还有内容
-                    check_more = await self.page.evaluate("""() => {
-                        const nextBtn = document.querySelector('.Pagination-next, .Paginator-next, [class*="next"]');
-                        return nextBtn ? true : false;
-                    }""")
-
-                    if not check_more:
-                        print(f"  没有更多分页按钮，可能已到最后一页")
-                        break
-
-                    page_num += 1
+                    print(f"  未找到分页按钮，可能已到最后一页")
+                    break
 
             except Exception as e:
                 print(f"  翻页失败: {type(e).__name__}: {e}")
@@ -228,7 +211,7 @@ class CollectionCrawler:
 
                     content = await self.page.evaluate("""() => {
                         // 优先查找回答容器
-                        const answerEl = document.querySelector('.zm-item-answer, .AnswerItem, .ContentItem AnswerItem');
+                        const answerEl = document.querySelector('.zm-item-answer, .AnswerItem, .ContentItem .AnswerItem');
                         if (answerEl && answerEl.innerText.trim().length > 100) {
                             return answerEl.innerText.trim();
                         }

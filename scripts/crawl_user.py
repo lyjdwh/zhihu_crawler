@@ -25,12 +25,12 @@
 import asyncio
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional
-from dataclasses import dataclass, asdict
-from collections import Counter
+from dataclasses import dataclass
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -43,22 +43,10 @@ class CrawlerConfig:
     """爬虫配置"""
 
     auth_file: str = "data/zhihu_auth.json"
-    headless: bool = False
+    headless: bool = True
     request_delay: float = 2.0
     timeout: int = 60000
 
-
-@dataclass
-class Answer:
-    """回答数据结构"""
-
-    question_title: str
-    question_url: str
-    answer_id: str
-    question_id: str
-    content: str
-    vote_count: int
-    created_time: Optional[str] = None
 
 
 # ============ 主题关键词 ============
@@ -211,7 +199,7 @@ TOPIC_KEYWORDS = {
 class ZhihuCrawler:
     """知乎爬虫"""
 
-    def __init__(self, config: CrawlerConfig = None):
+    def __init__(self, config: Optional[CrawlerConfig] = None):
         self.config = config or CrawlerConfig()
         self.browser_manager: Optional[BrowserManager] = None
         self.page = None
@@ -249,6 +237,53 @@ class ZhihuCrawler:
             return topic.lower() in text.lower()
 
         return any(kw in text for kw in keywords)
+
+    def _parse_date(self, date_str: str) -> Optional[datetime]:
+        """解析多种格式的日期字符串"""
+        if not date_str:
+            return None
+
+        # 1. ISO 格式 (从 <meta> 或 <time datetime="..."> 获取)
+        for fmt in [
+            "%Y-%m-%dT%H:%M:%S.%fZ",
+            "%Y-%m-%dT%H:%M:%S.%f",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d",
+            "%Y年%m月%d日",
+        ]:
+            try:
+                return datetime.strptime(date_str.strip(), fmt)
+            except ValueError:
+                continue
+
+        # 2. 相对时间: "x 小时前"、"x 天前"、"昨天"、"前天"
+        now = datetime.now()
+
+        hours_match = re.search(r"(\d+)\s*小时前", date_str)
+        if hours_match:
+            return now - timedelta(hours=int(hours_match.group(1)))
+
+        days_match = re.search(r"(\d+)\s*天前", date_str)
+        if days_match:
+            return now - timedelta(days=int(days_match.group(1)))
+
+        if "昨天" in date_str:
+            return now - timedelta(days=1)
+
+        if "前天" in date_str:
+            return now - timedelta(days=2)
+
+        # 3. 从文本中提取嵌入的日期 ("发布于 2026-03-15")
+        embedded = re.search(r"(\d{4}-\d{2}-\d{2})", date_str)
+        if embedded:
+            try:
+                return datetime.strptime(embedded.group(1), "%Y-%m-%d")
+            except ValueError:
+                pass
+
+        return None
 
     async def get_user_info(self, user_token: str) -> Dict:
         """获取用户信息"""
@@ -336,7 +371,9 @@ class ZhihuCrawler:
             print(f"  日期筛选: {before_date} 之前")
         print("-" * 50)
 
-        max_scrolls = 30
+        # 每次滚动约加载 20 条，根据目标数量动态计算上限
+        max_scrolls = max(30, (count // 10) + 5)
+        no_new_count = 0  # 连续无新内容的滚动次数
 
         while len(all_answers) < count and scroll_count < max_scrolls:
             # 获取当前页面回答（包含日期信息）
@@ -361,11 +398,33 @@ class ZhihuCrawler:
                         const questionId = qMatch[1];
                         const answerId = aMatch[1];
 
-                        // 尝试获取日期
+                        // 尝试获取日期 - 优先从 <meta> 或 <time> 的 datetime 属性获取
                         let createdTime = '';
-                        const timeEl = item.querySelector('[class*="time"], [class*="date"], .ContentItem-time');
-                        if (timeEl) {
-                            createdTime = timeEl.innerText.trim();
+                        // 1. 尝试 <meta itemprop="dateCreated">
+                        const metaDate = item.querySelector('meta[itemprop="dateCreated"]');
+                        if (metaDate) {
+                            createdTime = metaDate.getAttribute('content') || '';
+                        }
+                        // 2. 尝试 <time> 元素的 datetime 属性
+                        if (!createdTime) {
+                            const timeEl = item.querySelector('time[datetime]');
+                            if (timeEl) {
+                                createdTime = timeEl.getAttribute('datetime') || '';
+                            }
+                        }
+                        // 3. 从文本中提取日期（"发布于 2026-03-15"、"编辑于 2026-03-15"）
+                        if (!createdTime) {
+                            const timeTextEl = item.querySelector('.ContentItem-time, [class*="time"], [class*="date"]');
+                            if (timeTextEl) {
+                                const text = timeTextEl.innerText.trim();
+                                const dateMatch = text.match(/(\d{4}-\d{2}-\d{2})/);
+                                if (dateMatch) {
+                                    createdTime = dateMatch[1];
+                                } else {
+                                    // 处理 "x 小时前"、"昨天" 等相对时间
+                                    createdTime = text;
+                                }
+                            }
                         }
 
                         if (!existingIds.includes(answerId)) {
@@ -400,45 +459,33 @@ class ZhihuCrawler:
 
                 # 检查日期
                 if after_dt or before_dt:
-                    # 解析回答日期
                     created = ans.get("created_time", "")
                     if created:
-                        # 尝试解析日期
-                        try:
-                            # 尝试多种格式
-                            answer_dt = None
-                            for fmt in [
-                                "%Y-%m-%d",
-                                "%Y年%m月%d日",
-                                "%m-%d",
-                                "%Y-%m-%d %H:%M",
-                            ]:
-                                try:
-                                    answer_dt = datetime.strptime(created, fmt)
-                                    break
-                                except ValueError:
-                                    pass
-
-                            # 如果只有月日，假设是今年
-                            if answer_dt and answer_dt.year == 1900:
-                                answer_dt = answer_dt.replace(year=datetime.now().year)
-
-                            if answer_dt:
-                                if after_dt and answer_dt < after_dt:
-                                    continue
-                                if before_dt and answer_dt > before_dt:
-                                    continue
-                        except Exception:
-                            pass
+                        answer_dt = self._parse_date(created)
+                        if answer_dt:
+                            if after_dt and answer_dt < after_dt:
+                                continue
+                            if before_dt and answer_dt > before_dt:
+                                continue
 
                 all_answers.append(ans)
                 existing_ids.add(ans["answer_id"])
 
+            prev_count = len(all_answers)
             scroll_count += 1
             print(f"  滚动 {scroll_count}: 共 {len(all_answers)} 条匹配的回答")
 
             if len(all_answers) >= count:
                 break
+
+            # 连续 5 次滚动无新内容，说明已到底部
+            if len(all_answers) == prev_count:
+                no_new_count += 1
+                if no_new_count >= 5:
+                    print(f"  连续 {no_new_count} 次无新内容，停止滚动")
+                    break
+            else:
+                no_new_count = 0
 
             # 滚动加载更多
             await self.page.evaluate("window.scrollBy(0, 1200);")

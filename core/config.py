@@ -1,7 +1,6 @@
 """
 知乎爬虫配置文件
 """
-import os
 from pathlib import Path
 
 # 项目根目录
@@ -39,7 +38,7 @@ TARGET_USERS = {
         "expected_answers": 4832,
     },
     "MR_DANG": {
-        "url_token": "mr-dang",
+        "url_token": "mr-dang-77",
         "expected_answers": 142,
     }
 }
