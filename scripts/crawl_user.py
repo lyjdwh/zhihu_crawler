@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.browser import BrowserManager
 from utils.checkpoint import CheckpointManager
+from utils.image_downloader import ImageDownloader
 
 
 @dataclass
@@ -321,6 +322,10 @@ class ZhihuCrawler:
         with_content: bool = True,
         resume: bool = False,
         checkpoint=None,
+        extract_images: bool = True,
+        download_images: bool = True,
+        image_quality: str = "hd",
+        image_path: str = "output/images",
     ) -> List[Dict]:
         """
         爬取用户回答
@@ -508,45 +513,178 @@ class ZhihuCrawler:
         # 获取完整内容
         if with_content:
             print(f"\n获取完整内容 ({len(all_answers)} 条)...")
-            await self._fetch_content(all_answers)
+            await self._fetch_content(
+                all_answers,
+                extract_images=extract_images,
+                download_images=download_images,
+                image_quality=image_quality,
+                image_path=image_path,
+                user_token=user_token
+            )
 
         print(f"\n✓ 完成! 共获取 {len(all_answers)} 条回答")
 
         return all_answers
 
-    async def _fetch_content(self, answers: List[Dict]):
+    async def _fetch_content(
+        self,
+        answers: List[Dict],
+        extract_images: bool = True,
+        download_images: bool = True,
+        image_quality: str = "hd",
+        image_path: str = "output/images",
+        user_token: str = ""
+    ):
         """获取回答完整内容"""
-        for i, ans in enumerate(answers):
-            url = ans.get("question_url", "")
-            title = ans.get("question_title", "")[:35]
+        downloader = None
+        if extract_images and download_images:
+            downloader = ImageDownloader(
+                base_path=image_path,
+                quality=image_quality
+            )
+            await downloader.__aenter__()
 
-            print(f"  [{i + 1}/{len(answers)}] {title}...")
+        try:
+            for i, ans in enumerate(answers):
+                url = ans.get("question_url", "")
+                title = ans.get("question_title", "")[:35]
+                answer_id = ans.get("answer_id", "")
 
-            try:
-                await self.page.goto(url, wait_until="domcontentloaded")
-                await asyncio.sleep(2)
+                print(f"  [{i + 1}/{len(answers)}] {title}...")
 
-                content = await self.page.evaluate("""() => {
-                    let el = document.querySelector('.zm-item-answer .RichText');
-                    if (el) return el.innerText.trim();
+                try:
+                    await self.page.goto(url, wait_until="domcontentloaded")
+                    await asyncio.sleep(2)
 
-                    el = document.querySelector('.AnswerItem .RichText');
-                    if (el) return el.innerText.trim();
+                    # 滚动到页面底部触发懒加载
+                    await self.page.evaluate(
+                        "window.scrollTo(0, document.body.scrollHeight)"
+                    )
+                    await asyncio.sleep(1)
 
-                    return '';
-                }""")
+                    result = await self.page.evaluate("""(extractImages) => {
+                        let contentEl = null;
+                        const selectors = [
+                            '.zm-item-answer .RichText',
+                            '.AnswerItem .RichText',
+                            '.RichText'
+                        ];
 
-                if content:
-                    ans["content"] = content
+                        for (const sel of selectors) {
+                            const el = document.querySelector(sel);
+                            if (el && el.innerText.trim().length > 30) {
+                                contentEl = el;
+                                break;
+                            }
+                        }
 
-                # 每10条保存一次
-                if (i + 1) % 10 == 0:
-                    print(f"      >>> 已处理 {i + 1} 条")
+                        if (!contentEl) {
+                            return { content: '', images: [] };
+                        }
 
-                await asyncio.sleep(1.5)
+                        const contentHtml = contentEl.innerHTML;
+                        const images = [];
+                        let content = '';
 
-            except Exception as e:
-                print(f"      错误: {type(e).__name__}: {e}")
+                        // 递归遍历节点，按顺序提取内容和图片
+                        function traverseNode(node) {
+                            if (node.nodeType === Node.TEXT_NODE) {
+                                // 文本节点
+                                const text = node.textContent.trim();
+                                if (text) {
+                                    content += text + ' ';
+                                }
+                            } else if (node.nodeType === Node.ELEMENT_NODE) {
+                                if (node.tagName === 'IMG') {
+                                    // 图片节点，只处理不遍历子节点
+                                    if (extractImages) {
+                                        let url = node.getAttribute('data-original') || node.src || '';
+                                        if (url && url.startsWith('//')) {
+                                            url = 'https:' + url;
+                                        }
+
+                                        if (url && (url.includes('zhimg.com') || url.startsWith('http'))) {
+                                            const imgIndex = images.length;
+                                            images.push({
+                                                url: url,
+                                                alt: node.alt || '',
+                                                width: node.width || 0,
+                                                height: node.height || 0,
+                                                position: content.length
+                                            });
+                                            // 在文本中插入图片标记
+                                            content += `[图片：${imgIndex}] `;
+                                        }
+                                    }
+                                    return; // img节点没有需要处理的子节点
+                                } else if (node.tagName === 'BR' || node.tagName === 'P' || node.tagName === 'DIV' || node.tagName === 'H1' || node.tagName === 'H2' || node.tagName === 'H3' || node.tagName === 'H4' || node.tagName === 'H5' || node.tagName === 'H6') {
+                                    // 块级元素，添加换行
+                                    content += '\\n';
+                                } else if (node.tagName === 'LI') {
+                                    // 列表项
+                                    content += '\\n- ';
+                                } else if (node.tagName === 'NOSCRIPT' || node.tagName === 'SCRIPT' || node.tagName === 'STYLE') {
+                                    // 不需要处理的标签，跳过子节点
+                                    return;
+                                }
+
+                                // 遍历子节点
+                                for (const child of node.childNodes) {
+                                    traverseNode(child);
+                                }
+
+                                // 块级元素结束后添加换行
+                                if (node.tagName === 'P' || node.tagName === 'DIV' || node.tagName === 'H1' || node.tagName === 'H2' || node.tagName === 'H3' || node.tagName === 'H4' || node.tagName === 'H5' || node.tagName === 'H6') {
+                                    content += '\\n';
+                                }
+                            }
+                        }
+
+                        traverseNode(contentEl);
+
+                        // 清理多余的换行和空格
+                        content = content.replace(/\\n{3,}/g, '\\n\\n').trim();
+
+                        return {
+                            content: content,
+                            content_html: contentHtml,
+                            images: images
+                        };
+                    }""", extract_images)
+
+                    if result.get('content'):
+                        ans["content"] = result['content']
+
+                    if extract_images:
+                        ans["content_html"] = result.get('content_html', '')
+                        ans["images"] = result.get('images', [])
+
+                        # 下载图片
+                        if download_images and downloader and ans["images"] and answer_id:
+                            print(f"      下载 {len(ans['images'])} 张图片...")
+                            ans["images"] = await downloader.download_images(
+                                ans["images"],
+                                sub_dir=user_token,
+                                answer_id=answer_id
+                            )
+
+                            # 将图片标记插入到内容中
+                            ans["content"] = downloader.insert_images_into_content(
+                                ans["content"],
+                                ans["images"]
+                            )
+
+                    # 每10条保存一次
+                    if (i + 1) % 10 == 0:
+                        print(f"      >>> 已处理 {i + 1} 条")
+
+                    await asyncio.sleep(1.5)
+
+                except Exception as e:
+                    print(f"      错误: {type(e).__name__}: {e}")
+        finally:
+            if downloader:
+                await downloader.__aexit__()
 
     def save_results(self, answers: List[Dict], output_file: str):
         """保存结果到文件"""
@@ -657,6 +795,29 @@ async def main():
         default="data/checkpoint.json",
         help="检查点文件路径",
     )
+    parser.add_argument(
+        "--no-extract-images",
+        action="store_true",
+        help="关闭图片URL提取功能（默认开启）",
+    )
+    parser.add_argument(
+        "--no-download-images",
+        action="store_true",
+        help="关闭图片本地下载功能（默认开启）",
+    )
+    parser.add_argument(
+        "--image-quality",
+        type=str,
+        default="hd",
+        choices=["raw", "hd", "normal", "thumbnail"],
+        help="图片质量 (raw:原图, hd:高清, normal:普通, thumbnail:缩略图，默认hd)",
+    )
+    parser.add_argument(
+        "--image-path",
+        type=str,
+        default="output/images",
+        help="图片存储路径（默认 output/images）",
+    )
 
     args = parser.parse_args()
 
@@ -687,6 +848,10 @@ async def main():
             with_content=not args.no_content,
             resume=args.resume,
             checkpoint=checkpoint,
+            extract_images=not args.no_extract_images,
+            download_images=not args.no_download_images,
+            image_quality=args.image_quality,
+            image_path=args.image_path,
         )
 
         # 保存结果

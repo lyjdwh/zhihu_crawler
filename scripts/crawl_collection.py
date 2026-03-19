@@ -16,6 +16,7 @@ from typing import List, Dict, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.browser import BrowserManager
+from utils.image_downloader import ImageDownloader
 
 
 class CollectionCrawler:
@@ -47,7 +48,14 @@ class CollectionCrawler:
             await self.browser_manager.close()
 
     async def crawl(
-        self, collection_id: str, count: int = 200, item_type: str = "all"
+        self,
+        collection_id: str,
+        count: int = 200,
+        item_type: str = "all",
+        extract_images: bool = True,
+        download_images: bool = True,
+        image_quality: str = "hd",
+        image_path: str = "output/images",
     ) -> List[Dict]:
         """爬取收藏夹 - 支持分页"""
 
@@ -193,57 +201,166 @@ class CollectionCrawler:
 
         print(f"\n获取完整内容 ({len(items)} 条)...")
 
-        # 获取完整内容（阈值设为500，列表页摘要通常<200字符）
-        for i, item in enumerate(items):
-            if not item.get("content") or len(item.get("content", "")) < 500:
-                print(f"  [{i + 1}/{len(items)}] 获取: {item['title'][:30]}...")
-                try:
-                    await self.page.goto(
-                        item["url"], wait_until="domcontentloaded", timeout=30000
-                    )
-                    await asyncio.sleep(2)
+        # 初始化图片下载器
+        downloader = None
+        if extract_images and download_images:
+            downloader = ImageDownloader(
+                base_path=image_path,
+                quality=image_quality
+            )
+            await downloader.__aenter__()
 
-                    # 滚动到页面底部触发懒加载
-                    await self.page.evaluate(
-                        "window.scrollTo(0, document.body.scrollHeight)"
-                    )
-                    await asyncio.sleep(1)
+        try:
+            # 获取完整内容（阈值设为500，列表页摘要通常<200字符）
+            for i, item in enumerate(items):
+                if not item.get("content") or len(item.get("content", "")) < 500:
+                    print(f"  [{i + 1}/{len(items)}] 获取: {item['title'][:30]}...")
+                    try:
+                        await self.page.goto(
+                            item["url"], wait_until="domcontentloaded", timeout=30000
+                        )
+                        await asyncio.sleep(2)
 
-                    content = await self.page.evaluate("""() => {
-                        // 优先查找回答容器
-                        const answerEl = document.querySelector('.zm-item-answer, .AnswerItem, .ContentItem .AnswerItem');
-                        if (answerEl && answerEl.innerText.trim().length > 100) {
-                            return answerEl.innerText.trim();
-                        }
+                        # 滚动到页面底部触发懒加载
+                        await self.page.evaluate(
+                            "window.scrollTo(0, document.body.scrollHeight)"
+                        )
+                        await asyncio.sleep(1)
 
-                        // 备用方案
-                        const selectors = [
-                            '.zm-item-answer .RichText',
-                            '.AnswerItem .RichText',
-                            '.article .RichText',
-                            '.Post-content',
-                            '.RichText'
-                        ];
+                        result = await self.page.evaluate("""(extractImages) => {
+                            // 优先查找内容容器
+                            let contentEl = null;
+                            const containerSelectors = [
+                                '.zm-item-answer, .AnswerItem, .ContentItem .AnswerItem',
+                                '.article .RichText',
+                                '.Post-content',
+                                '.RichText'
+                            ];
 
-                        for (const sel of selectors) {
-                            const el = document.querySelector(sel);
-                            if (el && el.innerText.trim().length > 30) {
-                                return el.innerText.trim();
+                            for (const sel of containerSelectors) {
+                                const el = document.querySelector(sel);
+                                if (el && el.innerText.trim().length > 30) {
+                                    contentEl = el;
+                                    break;
+                                }
                             }
-                        }
-                        return '';
-                    }""")
 
-                    if content:
-                        item["content"] = content
+                            if (!contentEl) {
+                                return { content: '', images: [] };
+                            }
 
-                    if (i + 1) % 10 == 0:
-                        print(f"      >>> 已处理 {i + 1} 条")
+                            const contentHtml = contentEl.innerHTML;
+                            const images = [];
+                            let content = '';
 
-                    await asyncio.sleep(1.5)
+                            // 递归遍历节点，按顺序提取内容和图片
+                            function traverseNode(node) {
+                                if (node.nodeType === Node.TEXT_NODE) {
+                                    // 文本节点
+                                    const text = node.textContent.trim();
+                                    if (text) {
+                                        content += text + ' ';
+                                    }
+                                } else if (node.nodeType === Node.ELEMENT_NODE) {
+                                    if (node.tagName === 'IMG') {
+                                        // 图片节点，只处理不遍历子节点
+                                        if (extractImages) {
+                                            let url = node.getAttribute('data-original') || node.src || '';
+                                            if (url && url.startsWith('//')) {
+                                                url = 'https:' + url;
+                                            }
 
-                except Exception as e:
-                    print(f"      错误: {type(e).__name__}: {e}")
+                                            if (url && (url.includes('zhimg.com') || url.startsWith('http'))) {
+                                                const imgIndex = images.length;
+                                                images.push({
+                                                    url: url,
+                                                    alt: node.alt || '',
+                                                    width: node.width || 0,
+                                                    height: node.height || 0,
+                                                    position: content.length
+                                                });
+                                                // 在文本中插入图片标记
+                                                content += `[图片：${imgIndex}] `;
+                                            }
+                                        }
+                                        return; // img节点没有需要处理的子节点
+                                    } else if (node.tagName === 'BR' || node.tagName === 'P' || node.tagName === 'DIV' || node.tagName === 'H1' || node.tagName === 'H2' || node.tagName === 'H3' || node.tagName === 'H4' || node.tagName === 'H5' || node.tagName === 'H6') {
+                                        // 块级元素，添加换行
+                                        content += '\\n';
+                                    } else if (node.tagName === 'LI') {
+                                        // 列表项
+                                        content += '\\n- ';
+                                    } else if (node.tagName === 'NOSCRIPT' || node.tagName === 'SCRIPT' || node.tagName === 'STYLE') {
+                                        // 不需要处理的标签，跳过子节点
+                                        return;
+                                    }
+
+                                    // 遍历子节点
+                                    for (const child of node.childNodes) {
+                                        traverseNode(child);
+                                    }
+
+                                    // 块级元素结束后添加换行
+                                    if (node.tagName === 'P' || node.tagName === 'DIV' || node.tagName === 'H1' || node.tagName === 'H2' || node.tagName === 'H3' || node.tagName === 'H4' || node.tagName === 'H5' || node.tagName === 'H6') {
+                                        content += '\\n';
+                                    }
+                                }
+                            }
+
+                            traverseNode(contentEl);
+
+                            // 清理多余的换行和空格
+                            content = content.replace(/\\n{3,}/g, '\\n\\n').trim();
+
+                            return {
+                                content: content,
+                                content_html: contentHtml,
+                                images: images
+                            };
+                        }""", extract_images)
+
+                        if result.get('content'):
+                            item["content"] = result['content']
+
+                        if extract_images:
+                            item["content_html"] = result.get('content_html', '')
+                            item["images"] = result.get('images', [])
+
+                            # 下载图片
+                            if download_images and downloader and item["images"]:
+                                # 从URL提取回答/文章ID
+                                url = item.get("url", "")
+                                item_id = ""
+                                if "/answer/" in url:
+                                    item_id = url.split("/answer/")[-1].split("/")[0]
+                                elif "/article/" in url:
+                                    item_id = url.split("/article/")[-1].split("/")[0]
+
+                                if item_id:
+                                    print(f"      下载 {len(item['images'])} 张图片...")
+                                    sub_dir = f"collection_{collection_id}"
+                                    item["images"] = await downloader.download_images(
+                                        item["images"],
+                                        sub_dir=sub_dir,
+                                        answer_id=item_id
+                                    )
+
+                                    # 将图片标记插入到内容中
+                                    item["content"] = downloader.insert_images_into_content(
+                                        item["content"],
+                                        item["images"]
+                                    )
+
+                        if (i + 1) % 10 == 0:
+                            print(f"      >>> 已处理 {i + 1} 条")
+
+                        await asyncio.sleep(1.5)
+
+                    except Exception as e:
+                        print(f"      错误: {type(e).__name__}: {e}")
+        finally:
+            if downloader:
+                await downloader.__aexit__()
 
         print(f"\n✓ 完成! 共获取 {len(items)} 条")
 
@@ -280,6 +397,29 @@ async def main():
         "--output", type=str, default="output/collection_{id}.json", help="输出文件"
     )
     parser.add_argument("--headless", action="store_true", help="无头模式")
+    parser.add_argument(
+        "--no-extract-images",
+        action="store_true",
+        help="关闭图片URL提取功能（默认开启）",
+    )
+    parser.add_argument(
+        "--no-download-images",
+        action="store_true",
+        help="关闭图片本地下载功能（默认开启）",
+    )
+    parser.add_argument(
+        "--image-quality",
+        type=str,
+        default="hd",
+        choices=["raw", "hd", "normal", "thumbnail"],
+        help="图片质量 (raw:原图, hd:高清, normal:普通, thumbnail:缩略图，默认hd)",
+    )
+    parser.add_argument(
+        "--image-path",
+        type=str,
+        default="output/images",
+        help="图片存储路径（默认 output/images）",
+    )
 
     args = parser.parse_args()
 
@@ -287,7 +427,13 @@ async def main():
 
     async with CollectionCrawler(headless=args.headless) as crawler:
         items = await crawler.crawl(
-            collection_id=args.collection, count=args.count, item_type=args.type
+            collection_id=args.collection,
+            count=args.count,
+            item_type=args.type,
+            extract_images=not args.no_extract_images,
+            download_images=not args.no_download_images,
+            image_quality=args.image_quality,
+            image_path=args.image_path,
         )
 
         crawler.save_results(items, output_file)
