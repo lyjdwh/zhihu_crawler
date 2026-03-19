@@ -11,11 +11,14 @@ zhihu_crawler/
 ├── scripts/              # 爬虫脚本
 │   ├── crawl_user.py    # 用户回答爬虫（支持日期/主题过滤）
 │   └── crawl_collection.py  # 收藏夹爬虫（支持分页）
+├── utils/                # 工具模块
+│   └── image_downloader.py  # 图片异步下载工具
 ├── output/               # 输出数据
 │   ├── xu-ze-qiu_finance.json   # 奥特之父金融回答
 │   ├── mr_dang_finance.json     # MR Dang金融回答
 │   ├── my_collection.json       # 个人收藏夹
-│   └── 每日股市推荐报告_*.md    # 每日推荐报告
+│   ├── 每日股市推荐报告_*.md    # 每日推荐报告
+│   └── images/          # 下载的图片（按用户ID分目录）
 ├── data/                 # 数据文件
 │   └── zhihu_auth.json  # 知乎登录态（需自行配置）
 └── docs/                 # 文档
@@ -73,6 +76,11 @@ python scripts/crawl_collection.py --collection 860134416 --count 200
 - 使用真实 User-Agent
 - 添加适当延迟
 
+### 4. 图片数据字段
+- `images[].local_path`: 完整绝对路径，直接用 Read 工具读取
+- `images[].relative_path`: 相对路径（相对于 output/images/）
+- 图片存储：`output/images/{user_id}/{answer_id}_{index}.{ext}`
+
 ## 注意事项
 
 - 需要在 `data/zhihu_auth.json` 中配置登录态
@@ -119,7 +127,11 @@ python scripts/crawl_collection.py --collection 860134416 --count 200
 
 ### 生成报告流程：
 
-1. 爬取专家最新回答：`scripts/crawl_user.py --user xu-ze-qiu --after-date 上周日期`
+1. 爬取专家最新回答：
+   ```bash
+   python scripts/crawl_user.py --user xu-ze-qiu --after-date $(date -d '7 days ago' +%Y-%m-%d)
+   python scripts/crawl_user.py --user mr-dang-77 --after-date $(date -d '7 days ago' +%Y-%m-%d)
+   ```
 2. 分析提取股票信息
 3. 参考需求文档格式生成报告
 4. 结论前置，分析后置
