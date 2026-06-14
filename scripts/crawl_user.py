@@ -25,16 +25,16 @@
 import asyncio
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Dict, Optional
 from dataclasses import dataclass
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.browser import BrowserManager
+from core.filters import check_topic, parse_zhihu_date
 from utils.checkpoint import CheckpointManager
 from utils.image_downloader import ImageDownloader
 
@@ -48,150 +48,6 @@ class CrawlerConfig:
     request_delay: float = 2.0
     timeout: int = 60000
 
-
-
-# ============ 主题关键词 ============
-
-TOPIC_KEYWORDS = {
-    "finance": [
-        "A股",
-        "股市",
-        "股票",
-        "大盘",
-        "涨停",
-        "跌停",
-        "牛市",
-        "熊市",
-        "抄底",
-        "基金",
-        "投资",
-        "理财",
-        "金融",
-        "沪指",
-        "创业板",
-        "光伏",
-        "宁德",
-        "比亚迪",
-        "小米",
-        "英伟达",
-        "格力",
-        "蔚来",
-        "智界",
-        "油价",
-        "石油",
-        "黄金",
-        "美元",
-        "人民币",
-        "汇率",
-        "国债",
-        "债市",
-        "期货",
-        "期权",
-        "量化",
-        "私募",
-        "公募",
-        "IPO",
-        "转债",
-        "融券",
-        "融资",
-        "配股",
-        "分红",
-        "股息",
-    ],
-    "tech": [
-        "AI",
-        "人工智能",
-        "大模型",
-        "ChatGPT",
-        "GPT",
-        "Claude",
-        "芯片",
-        "半导体",
-        "CPU",
-        "GPU",
-        "英伟达",
-        "AMD",
-        "英特尔",
-        "手机",
-        "华为",
-        "苹果",
-        "小米",
-        "OPPO",
-        "vivo",
-        "三星",
-        "新能源",
-        "电动车",
-        "特斯拉",
-        "比亚迪",
-        "自动驾驶",
-        "智驾",
-        "机器人",
-        "具身智能",
-        "人形机器人",
-        "宇树",
-        "特斯拉",
-    ],
-    "international": [
-        "伊朗",
-        "以色列",
-        "中东",
-        "霍尔木兹",
-        "美军",
-        "战争",
-        "哈梅内伊",
-        "美国",
-        "特朗普",
-        "拜登",
-        "普京",
-        "俄罗斯",
-        "乌克兰",
-        "日本",
-        "韩国",
-        "朝鲜",
-        "台海",
-        "南海",
-        "中美",
-        "G7",
-    ],
-    "culture": [
-        "动漫",
-        "漫画",
-        "龙珠",
-        "JoJo",
-        "鸟山明",
-        "镖人",
-        "电影",
-        "票房",
-        "春节档",
-        "热辣滚烫",
-        "飞驰人生",
-        "音乐",
-        "游戏",
-        "主播",
-        "直播",
-        "短视频",
-    ],
-    "life": [
-        "买房",
-        "房价",
-        "房子",
-        "别墅",
-        "装修",
-        "房贷",
-        "工作",
-        "职场",
-        "创业",
-        "裁员",
-        "就业",
-        "工资",
-        "恋爱",
-        "婚姻",
-        "相亲",
-        "出轨",
-        "老婆",
-        "老公",
-    ],
-}
 
 
 # ============ 爬虫类 ============
@@ -226,65 +82,6 @@ class ZhihuCrawler:
         """关闭浏览器"""
         if self.browser_manager:
             await self.browser_manager.close()
-
-    def check_topic(self, text: str, topic: str) -> bool:
-        """检查文本是否匹配指定主题"""
-        if topic == "all":
-            return True
-
-        keywords = TOPIC_KEYWORDS.get(topic, [])
-        if not keywords:
-            # 如果不是预定义主题，直接用关键词匹配
-            return topic.lower() in text.lower()
-
-        return any(kw in text for kw in keywords)
-
-    def _parse_date(self, date_str: str) -> Optional[datetime]:
-        """解析多种格式的日期字符串"""
-        if not date_str:
-            return None
-
-        # 1. ISO 格式 (从 <meta> 或 <time datetime="..."> 获取)
-        for fmt in [
-            "%Y-%m-%dT%H:%M:%S.%fZ",
-            "%Y-%m-%dT%H:%M:%S.%f",
-            "%Y-%m-%dT%H:%M:%S",
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%d %H:%M",
-            "%Y-%m-%d",
-            "%Y年%m月%d日",
-        ]:
-            try:
-                return datetime.strptime(date_str.strip(), fmt)
-            except ValueError:
-                continue
-
-        # 2. 相对时间: "x 小时前"、"x 天前"、"昨天"、"前天"
-        now = datetime.now().astimezone()
-
-        hours_match = re.search(r"(\d+)\s*小时前", date_str)
-        if hours_match:
-            return now - timedelta(hours=int(hours_match.group(1)))
-
-        days_match = re.search(r"(\d+)\s*天前", date_str)
-        if days_match:
-            return now - timedelta(days=int(days_match.group(1)))
-
-        if "昨天" in date_str:
-            return now - timedelta(days=1)
-
-        if "前天" in date_str:
-            return now - timedelta(days=2)
-
-        # 3. 从文本中提取嵌入的日期 ("发布于 2026-03-15")
-        embedded = re.search(r"(\d{4}-\d{2}-\d{2})", date_str)
-        if embedded:
-            try:
-                return datetime.strptime(embedded.group(1), "%Y-%m-%d")
-            except ValueError:
-                pass
-
-        return None
 
     async def get_user_info(self, user_token: str) -> Dict:
         """获取用户信息"""
@@ -459,14 +256,14 @@ class ZhihuCrawler:
 
                 # 检查主题
                 text = ans["question_title"]
-                if not self.check_topic(text, topic):
+                if not check_topic(text, topic):
                     continue
 
                 # 检查日期
                 if after_dt or before_dt:
                     created = ans.get("created_time", "")
                     if created:
-                        answer_dt = self._parse_date(created)
+                        answer_dt = parse_zhihu_date(created)
                         if answer_dt:
                             if after_dt and answer_dt < after_dt:
                                 continue

@@ -2,17 +2,26 @@
 
 ## 项目概述
 
-基于 Playwright 的知乎数据爬取工具，支持爬取用户回答、收藏夹内容，用于构建每日股市推荐系统。
+基于 Playwright 和 OpenCLI 双后端的知乎数据爬取工具，支持爬取用户回答、收藏夹内容、热榜，用于构建每日股市推荐系统。
 
 ## 项目结构
 
 ```
 zhihu_crawler/
 ├── scripts/              # 爬虫脚本
-│   ├── crawl_user.py    # 用户回答爬虫（支持日期/主题过滤）
-│   └── crawl_collection.py  # 收藏夹爬虫（支持分页）
+│   ├── crawl_user.py    # 用户回答爬虫（Playwright 后端）
+│   ├── crawl_collection.py  # 收藏夹爬虫（Playwright 后端）
+│   ├── crawl_user_opencli.py    # 用户回答爬虫（OpenCLI 后端）
+│   ├── crawl_collection_opencli.py  # 收藏夹爬虫（OpenCLI 后端）
+│   └── crawl_hot_opencli.py   # 热榜爬虫（OpenCLI 独有新能力）
+├── core/                 # 核心模块
+│   ├── browser.py       # Playwright 浏览器管理
+│   ├── opencli_runner.py # OpenCLI 子进程封装
+│   ├── filters.py       # 共享过滤模块（主题/日期）
+│   └── config.py        # 全局配置（含 OpenCLI 配置）
 ├── utils/                # 工具模块
-│   └── image_downloader.py  # 图片异步下载工具
+│   ├── image_downloader.py  # 图片异步下载工具
+│   └── checkpoint.py    # 断点续爬
 ├── output/               # 输出数据
 │   ├── xu-ze-qiu_finance.json   # 奥特之父金融回答
 │   ├── mr_dang_finance.json     # MR Dang金融回答
@@ -20,7 +29,7 @@ zhihu_crawler/
 │   ├── 每日股市推荐报告_*.md    # 每日推荐报告
 │   └── images/          # 下载的图片（按用户ID分目录）
 ├── data/                 # 数据文件
-│   └── zhihu_auth.json  # 知乎登录态（需自行配置）
+│   └── zhihu_auth.json  # 知乎登录态（Playwright 用，OpenCLI 不需要）
 └── docs/                 # 文档
     └── 每日荐股系统需求.md
 ```
@@ -51,6 +60,52 @@ python scripts/crawl_collection.py --collection 860134416 --count 200
 - `culture` - 动漫/电影/游戏
 - `life` - 生活/职场/情感
 - 自定义关键词
+
+## OpenCLI 使用方法 (替代后端)
+
+### 前置条件
+```bash
+# 1. 安装 opencli
+npm install -g opencli
+
+# 2. 安装 Chrome 扩展（首次使用 opencli 会自动提示）
+#    在 Chrome 中打开知乎并登录
+
+# 3. 验证（无需手动 bind，zhihu 命令内部自动管理浏览器）
+opencli zhihu hot --limit 5 -f json
+```
+
+### 爬取用户回答 (OpenCLI 版)
+```bash
+# 参数完全对齐 Playwright 版
+python scripts/crawl_user_opencli.py --user xu-ze-qiu --count 50 --topic finance
+python scripts/crawl_user_opencli.py --user xu-ze-qiu --after-date 2026-03-01 --topic finance
+python scripts/crawl_user_opencli.py --user xu-ze-qiu --count 50 --no-content --no-extract-images
+```
+
+### 爬取收藏夹 (OpenCLI 版)
+```bash
+python scripts/crawl_collection_opencli.py --collection 860134416 --count 200
+```
+
+### 爬取热榜 (OpenCLI 独有新能力)
+```bash
+python scripts/crawl_hot_opencli.py --limit 20
+python scripts/crawl_hot_opencli.py --limit 30 --output output/hot_today.json
+```
+
+### OpenCLI vs Playwright 对比
+
+| 维度 | Playwright | OpenCLI |
+|------|-----------|---------|
+| 安装 | `pip install playwright` | `npm install -g opencli` |
+| 登录方式 | auth.json storage state | 真人浏览器窗口登录 |
+| 反爬能力 | 中等（需手动配置反爬参数） | 强（真人浏览器指纹） |
+| 维护成本 | 需维护选择器、反爬逻辑 | 低（adapter 持续更新） |
+| 输出格式 | 自定义 JSON | JSON/YAML/Table/CSV/MD |
+| 热榜支持 | 无 | 有 (`zhihu hot`) |
+| 图片提取 | 完整支持（HTML 解析） | 有限（需额外 browser eval） |
+| 离线使用 | 是 | 否（通过浏览器桥接） |
 
 ## 技术要点
 

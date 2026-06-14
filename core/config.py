@@ -42,3 +42,14 @@ TARGET_USERS = {
         "expected_answers": 142,
     }
 }
+
+# OpenCLI 配置
+OPENCLI_CONFIG = {
+    "binary_path": "opencli",          # opencli 可执行文件路径（默认从 PATH 查找）
+    "browser_session": "zhihu",        # browser session 名称
+    "window_mode": "background",       # 浏览器窗口模式: foreground / background
+    "site_session": "persistent",      # 站点会话模式: ephemeral / persistent
+    "timeout": 120,                    # 子进程超时（秒）
+    "request_delay": 2.0,              # 请求间隔（秒）
+    "format": "json",                  # 输出格式
+}
